@@ -89,6 +89,10 @@ class SimBus:
         self.force_max = {i: m.actuator_forcerange[a, 1] for i, a in self.act.items()}
         self.torque = False
         self.lift_ticks = 2048.0   # fake lift encoder, wraps like the real one
+        self.polled = list(self.ids)   # BusThread drops silent motors through set_polled; mirror Bus
+
+    def set_polled(self, ids):
+        self.polled = list(ids)
 
     def voltage(self):
         return 12.0

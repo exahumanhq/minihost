@@ -10,7 +10,8 @@ costs nothing, and if a tick runs late we know by how much.
 
 time.monotonic everywhere. time.time can jump when NTP adjusts the clock, and
 a control loop that measures intervals with it will eventually see a negative
-or huge dt.
+or huge dt. (On Windows time.monotonic ticks every 15.6 ms; the Pi is Linux,
+where it is fine. Tests that time short things use perf_counter.)
 """
 import time
 
@@ -40,29 +41,60 @@ class Ticker:
         return max(late, 0.0)
 
 
+def percentile(values, q):
+    """Nearest-rank percentile of a list, no numpy."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    return s[min(len(s) - 1, max(0, int(round(q * (len(s) - 1)))))]
+
+
 class Summary:
     """Collects numbers during the second and prints one line at the end of it.
 
     Printing every tick floods the terminal and costs more than the tick. One
     line a second is enough to see if the loop is healthy, which is the point.
+
+    Fields print as their mean. Fields whose name ends in `_ms` are timings,
+    and a mean hides exactly what matters there: one silent servo adds a whole
+    timeout to one tick and averages away. Those print as mean|p99|max.
     """
 
     def __init__(self, period_s=1.0):
         self.period = period_s
         self.t0 = time.monotonic()
-        self.sums = {}
+        self.vals = {}
         self.n = 0
 
     def add(self, **vals):
         for k, v in vals.items():
-            self.sums[k] = self.sums.get(k, 0.0) + v
+            self.vals.setdefault(k, []).append(v)
         self.n += 1
+
+    def stats(self):
+        """{field: {"mean", "p50", "p99", "max"}} for the current second."""
+        out = {}
+        for k, v in self.vals.items():
+            out[k] = {"mean": sum(v) / max(len(v), 1), "p50": percentile(v, 0.5), "p99": percentile(v, 0.99),
+                      "max": max(v) if v else 0.0}
+        return out
+
+    def format(self, now=None):
+        now = time.monotonic() if now is None else now
+        hz = self.n / max(now - self.t0, 1e-9)
+        parts = []
+        for k, s in self.stats().items():
+            if k.endswith("_ms"):
+                parts.append(f"{k}={s['mean']:.1f}|{s['p99']:.1f}|{s['max']:.1f}")
+            else:
+                parts.append(f"{k}={s['mean']:.1f}")
+        return f"hz={hz:.1f} " + " ".join(parts)
 
     def maybe_print(self, prefix=""):
         now = time.monotonic()
         if now - self.t0 < self.period:
-            return
-        hz = self.n / (now - self.t0)
-        fields = " ".join(f"{k}={v / max(self.n, 1):.1f}" for k, v in self.sums.items())
-        print(f"{prefix}hz={hz:.1f} {fields}", flush=True)
-        self.t0, self.sums, self.n = now, {}, 0
+            return None
+        line = prefix + self.format(now)
+        print(line, flush=True)
+        self.t0, self.vals, self.n = now, {}, 0
+        return line

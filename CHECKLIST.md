@@ -9,7 +9,8 @@ Everything here runs on a laptop. If any of it fails, the problem is in this
 repo, not the hardware.
 
 - [x] `pip install -r requirements.txt` in a fresh venv. Pulls feetech-servo-sdk, numpy, mujoco, pygame.
-- [x] `python -m pytest -q tests` passes. 10 tests: sign-magnitude round trip, packet pack/unpack, UDP newest-wins over loopback, wheel kinematics, lift unwrap and soft limits, monitor dwell, twin tracks a goal and shows load when pushed, the real `Bus` and SDK against the pty servo emulator (reads, torque with caps, a motor going silent is dropped within three reads and recovered within 2.5 s), gripper range fraction.
+- [x] `python -m pytest -q tests` passes. 15 tests: sign-magnitude round trip, packet pack/unpack, UDP newest-wins over loopback, wheel kinematics, lift unwrap and soft limits, monitor dwell, summary percentiles, twin tracks a goal and shows load when pushed, the real `Bus` and SDK against the servo emulator twice (pty on Linux/macOS, in-process `LoopbackPort` on any OS: reads, torque with caps, a motor going silent costs the SDK's ~34 ms once and is dropped within three reads and recovered within 2.5 s), gripper range fraction, and the host loop itself three ways (on the twin: step clamp, gripper mapping, limits, watchdog trip and recovery, torque off on close; `--no-torque` hands nothing to the bus; over the real Bus + SDK on two emulated boards: velocity mode, caps, goals and wheel speeds land on the boards). On Windows 14 run and the pty one skips.
+- [x] Two bugs the new tests found (2026-11-21): `--sim` crashed the bus thread after its first read because `SimBus` had no `polled`, so the twin never moved; and the SDK keeps each motor's bytes from the previous sync read, so motors behind a silent one were reported with stale positions instead of missing. Both fixed in `sim_bus.py` and `Bus.sync_read`.
 - [x] `python -m minihost.host --sim` holds 50 Hz with `late_ms=0.0` for several seconds and exits with "torque off, ports closed" on Ctrl-C.
 - [x] `python operator/teleop.py --host 127.0.0.1 --fake-leader --headless --seconds 3` against the sim host prints `rtt` about 20 ms (one host tick) and follower ticks within a few of the leader.
 - [x] Watchdog: kill the operator while the sim host runs; the host's `wd=` column goes to 1 within one summary line.
@@ -26,8 +27,10 @@ Settled by the old scripts having run on this robot, so checkpoint 2 only
 confirms them: register table and 1 Mbaud (Skyler's `so101/teleop.py` drove
 these arms through the same LeRobot table); 2048 = middle pose with
 calibration stored in the servos (so101 README, three places); EEPROM limits
-are real; wheels 8/9/10 and lift 11 on the left board; cameras do MJPG at
-640x480 (the guide's fix worked). Do not run `lerobot-calibrate` on these
+are real; wheels 8/9/10 and lift 11 on the left board. Not settled, only
+claimed: that the cameras do MJPG at 640x480 comes from the guide's prose, and
+the upstream camera config never set a fourcc, so it stays a checkpoint-2
+check (`v4l2-ctl --list-formats-ext`). Do not run `lerobot-calibrate` on these
 arms: it overwrites the in-servo calibration (so101 README).
 
 ## Checkpoint 2: each piece of hardware alone, nothing moves

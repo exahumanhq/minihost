@@ -98,7 +98,7 @@ The robot has 12 arm joints (6 per arm), 3 base velocities (x, y, rotation) and 
 
 ## Where to find it
 
-Fills in as files are written. Tests: `python -m pytest -q tests` (10 tests, no hardware needed). `WALKTHROUGH.md` explains every function and compares it to the old setup; `CHECKLIST.md` is the bring-up order.
+Fills in as files are written. Tests: `python -m pytest -q tests` (15 tests, no hardware needed; they run on Windows too, where the one pty test skips and `LoopbackPort` stands in for the serial device). `WALKTHROUGH.md` explains every function and compares it to the old setup; `CHECKLIST.md` is the bring-up order.
 
 Try it without a robot, three terminals:
 
@@ -115,11 +115,11 @@ python operator/teleop.py --host 127.0.0.1 --fake-leader
 | Base and lift mapping | `minihost/base.py` | `OmniBase.wheel_speeds` (body velocity to ticks/s, scales down instead of clipping), `Lift` (unwraps turns, relative height, soft limits). Numbers are alohamini1 and unmeasured. |
 | UDP command and state packets, timestamps, sequence | `minihost/link.py` | fixed `struct` layouts, `Udp.recv` drains and keeps the newest. State echoes the command timestamp so the operator computes RTT. |
 | MJPG camera passthrough | `minihost/camera.py` | ffmpeg `-c:v copy` to an HTTP multipart stream any browser shows. Starts ffmpeg on first client, stops on last. `--test` uses a test pattern. Separate process from host.py by design. |
-| Fixed-rate loop, deadline log, once-a-second summary | `minihost/loop.py`, `minihost/host.py` | `Ticker` and `Summary` in loop.py. `host.py` is the robot process: `python -m minihost.host --left ... --right ...`, start with `--no-torque`. Dry-run with a fake bus holds 51 Hz with 0 late ticks. |
+| Fixed-rate loop, deadline log, once-a-second summary | `minihost/loop.py`, `minihost/host.py` | `Ticker` and `Summary` in loop.py; timing fields print mean\|p99\|max so one stalled read is visible. `host.py` is the robot process: `python -m minihost.host --left ... --right ...`, start with `--no-torque`. The loop body is `Host.tick()`, driven one tick at a time by the tests. Dry-run with a fake bus holds 51 Hz with 0 late ticks. |
 | Stall and load monitor | `minihost/monitor.py` | two dwell-timed rules in ticks; flags go out in the state packet. Thresholds are guesses until measured. |
 | Operator: leader arms, keyboard, display | `operator/teleop.py` | pygame window: RTT, state age, flags, leader vs follower ticks. WASD/QE base, RF lift, SPACE holds arms. `--fake-leader` for testing. Reuses `Bus` for the leaders, torque never enabled. |
 | MuJoCo twin as a fake bus | `minihost/sim_bus.py` | `SimBus` has the same methods as `Bus`; `python -m minihost.host --sim` runs the real loop against it. Tick/radian mapping is an assumption noted in the file. |
-| Fake servo board on a pty (real Bus + SDK, no hardware) | `tools/feetech_sim.py` | speaks the Feetech protocol, backed by the twin; `--missing-id` reproduces the silent-motor stall. |
+| Fake servo board (real Bus + SDK, no hardware) | `tools/feetech_sim.py` | speaks the Feetech protocol, backed by the twin; `--missing-id` reproduces the silent-motor stall. Two wires: a pty (Linux/macOS) or `LoopbackPort`, an in-process stand-in for the SDK's PortHandler that works on any OS (`Bus(..., port_handler=LoopbackPort(board))`). |
 | Bus timing measurement | `tools/measure_bus.py` | Run this first on the robot. Never enables torque. Prints sync-read time, SDK timeout, voltage, limits, load. |
 
 ## References

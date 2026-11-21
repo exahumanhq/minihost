@@ -64,6 +64,7 @@ class Udp:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if bind_port is not None:
             self.sock.bind(("0.0.0.0", bind_port))
+        self.port = self.sock.getsockname()[1] if bind_port is not None else None   # bind_port=0 picks a free one
         self.sock.setblocking(False)
         self.peer = None       # who last talked to us; the host replies there
         self.dropped = 0       # datagrams skipped because a newer one was waiting
@@ -71,7 +72,10 @@ class Udp:
     def send(self, data, addr=None):
         addr = addr or self.peer
         if addr:
-            self.sock.sendto(data, addr)
+            try:
+                self.sock.sendto(data, addr)
+            except OSError:
+                pass               # peer unreachable; the next tick tries again
 
     def recv(self, size):
         last = None
@@ -80,6 +84,12 @@ class Udp:
                 data, addr = self.sock.recvfrom(2048)
             except BlockingIOError:
                 return last
+            except (ConnectionResetError, OSError):
+                # UDP has no connection, but the OS still surfaces an ICMP "port unreachable"
+                # from a peer that went away as an error on our next recv (Windows: WinError
+                # 10054, Linux: ECONNREFUSED). The operator closing its window must not kill
+                # the host; swallow it and keep draining.
+                continue
             if len(data) != size:
                 continue           # not ours; ignore rather than crash
             if last is not None:

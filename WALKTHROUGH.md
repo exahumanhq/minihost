@@ -89,11 +89,17 @@ Nothing has touched hardware.
 - Old: `busy_wait(max(0, 1/hz - elapsed))` in the AlohaMini host, which on their build was a busy loop.
 - Verdict: better on CPU, same accuracy. Tested: 100 ticks at 200 Hz in 0.495 s with 0 to 1 late.
 
-### `Summary.add(**vals)`, `Summary.maybe_print(prefix)`
-- Does: averages whatever it is given over a second and prints one line.
-- Why: the only way to know the loop is healthy on a Pi is a number per second you can read in `top`'s other pane.
-- Old: `--profile_timing` in the AlohaMini host prints a similar per-second breakdown; off by default.
-- Verdict: same idea, always on.
+### `percentile(values, q)`
+- Does: nearest-rank percentile of a list, no numpy.
+- Why: a mean hides exactly the thing we care about: one 34 ms read among forty-nine 0.7 ms reads moves the mean to 1.4 ms and is invisible. p99 and max show it.
+- Old: averages only (`--profile_timing`).
+- Verdict: better. Ported from the teleop-latency-bench rebuild on 2026-11-21.
+
+### `Summary.add(**vals)`, `Summary.stats()`, `Summary.format()`, `Summary.maybe_print(prefix)`
+- Does: keeps every value given during the second; prints one line with the mean of each field, and for fields ending in `_ms` mean|p99|max. `stats()` returns the same numbers as a dict for tests and for anything that wants to ship them.
+- Why: the only way to know the loop is healthy on a Pi is a number per second you can read in `top`'s other pane, and for timing fields the worst case is the number.
+- Old: `--profile_timing` in the AlohaMini host prints per-second averages; off by default.
+- Verdict: better: always on, and the stall is visible. Tested: 49 reads at 0.7 ms plus one at 34.9 ms prints `bus_l_ms=1.4|34.9|34.9`.
 
 ---
 
@@ -141,11 +147,27 @@ Nothing has touched hardware.
 
 ## minihost/host.py
 
-### `main()`
-- Does: opens both buses (or the twin with `--sim`), checks voltage, reads limits, sets wheel/lift velocity mode, enables torque with caps, starts the bus threads, then the 50 Hz loop: newest command, cached state, step-clamped goals inside the servo limits with the gripper fraction stretched onto the follower's range, watchdog that holds arms and stops base and lift, monitor flags, one state packet back, one summary line a second. `finally`: stop threads, zero velocities, torque off, close ports.
+### `Host.__init__(left, right, ...)`
+- Does: the one-time setup that used to be the top of `main()`: voltage check, limits from both buses, wheel and lift velocity mode, torque with caps, bus threads, wait for the first read (5 s limit, then a clear error), UDP socket, goal = where the arms are.
+- Why: pulled out of `main()` so the tests can build a host on the twin or on emulated boards and drive it one tick at a time. Behaviour is unchanged; `main()` now only parses arguments.
+- Old: all inline in `main()`; the loop was never run by a test, only by hand.
+- Verdict: same behaviour, now tested three ways (see `tests/`). Ported from the rebuild's `HostLoop` idea on 2026-11-21.
+
+### `Host.tick(late, now)`
+- Does: one loop iteration: newest command, cached state, step-clamped goals inside the servo limits with the gripper fraction stretched onto the follower's range, watchdog that holds arms and stops base and lift, monitor flags, hand goals to the bus threads (unless `--no-torque`), one state packet back, summary. Returns the flags.
 - Why: this is the whole robot-side program. No camera, no torch, no framework.
 - Old: `alohamini_host.py`: same loop shape but with camera capture and JPEG encode inside it, torch imported through lerobot, a 100-minute self-exit, `Restart=always` in systemd, 1 s watchdog, no command timestamps.
-- Verdict: better where it counts (nothing slow in the loop, nothing imported for no reason, latency measured, dead motors survived). Worse: no dataset recording, no LeRobot compatibility, no homing. Tested end to end on two pty boards with the real SDK: 50 Hz, 0 late ticks, RTT 20 ms over loopback, watchdog flag within one summary line of the operator quitting, torque registers 0 after Ctrl-C.
+- Verdict: better where it counts (nothing slow in the loop, nothing imported for no reason, latency measured, dead motors survived). Worse: no dataset recording, no LeRobot compatibility, no homing. Tested: on the twin the goal moves 80 ticks a tick toward the target and stops at the EEPROM limit, gripper fraction 4095 lands on the follower's max, the twin's actuator gets the goal, 100 ms of silence trips the watchdog (wheels and lift zero, goals frozen) and the next command clears it; over the real Bus + SDK on two emulated boards, velocity mode, caps, goals and wheel speeds all land in the boards' registers.
+
+### `Host.run()`, `Host.close()`
+- Does: `run` paces `tick` with `Ticker` until Ctrl-C; `close` stops the threads first, then zeroes velocities, torque off on both buses, closes ports and the socket.
+- Why: torque off no matter how we got here, and in that order so a queued goal cannot be written after torque is off.
+- Old: the same `finally` block inline in `main()`.
+- Verdict: same, now reached by the tests (both twin buses show torque off after `close()`).
+
+### `main()`
+- Does: argument parsing, bus construction (`--sim` picks `SimBus`), `Host(...).run()`.
+- Verdict: thin on purpose.
 
 ---
 
@@ -186,10 +208,32 @@ Nothing has touched hardware.
 - Verdict: new.
 
 ## tools/feetech_sim.py
-- Does: a fake servo board on a pty speaking the Feetech protocol (ping, read, write, sync read, sync write, checksum, little-endian), backed by `SimBus`. `--missing-id` makes one servo silent.
+
+### `FakeBoard`
+- Does: a servo chain speaking the Feetech protocol (ping, read, write, sync read, sync write, checksum, little-endian), backed by `SimBus`. `missing` makes servos silent. Keeps a `log` of every request for tests.
 - Why: so `bus.py` and the real SDK run without hardware. It found the partial-read and dead-motor behaviour.
 - Old: nothing.
 - Verdict: new. It cannot validate register addresses (written from the same table), only plumbing.
+
+### `Framer.feed(bytes)`
+- Does: cuts a byte stream into request frames, checks checksums, hands each to the board, returns the replies.
+- Why: the pty server and `LoopbackPort` must parse identically, so they share this.
+- Verdict: refactor of what `serve()` did inline.
+
+### `LoopbackPort`
+- Does: stands in for scservo_sdk's `PortHandler` in process: `writePort` feeds the framer, `readPort` returns the replies, and `setPacketTimeout`/`isPacketTimeout` use the SDK's own formula (tx time + 2 x LATENCY_TIMER + 2 ms) on `perf_counter`.
+- Why: the pty needs Linux or macOS; this runs the real `Bus` and the real SDK against the fake board on Windows too, with the same 34 ms cost for a silent motor. Pass it as `Bus(..., port_handler=LoopbackPort(board))`.
+- Old: nothing; the rebuild had the same idea over pyserial.
+- Verdict: better: every emulator test now runs on every OS. It found two bugs the pty path had not: `--sim` killed the bus thread (`SimBus` lacked `polled`), and the SDK reports stale bytes for motors behind a silent one (fixed in `Bus.sync_read`).
+
+### `serve(board, fd)`, `open_board(arm, ids)`, `loopback_board(arm, ids)`
+- Does: the pty server (POSIX), and the one-line constructors for either wire.
+- Verdict: same as before plus the loopback twin.
+
+## Bugs fixed by the ported tests (2026-11-21)
+- `SimBus` had no `polled`/`set_polled`, so with `--sim` the bus thread died on its first iteration and the twin never received a goal. Nothing noticed because the loop kept reading the one cached state.
+- `GroupSyncRead` never clears its buffers; after a silent motor, `isAvailable()` said motors behind it were fresh when they held the previous read's bytes. `Bus.sync_read` now clears before each read, so they are absent instead.
+- A UDP peer that closes its socket makes the OS raise `ConnectionResetError` on the host's next `recvfrom` (Windows) or `ECONNREFUSED` (Linux). `Udp.recv` and `Udp.send` now swallow that; an operator closing the window must not kill the host.
 
 ---
 

@@ -62,9 +62,11 @@ class Bus:
     follower. If that ever changes, the mapping belongs in the host, not here.
     """
 
-    def __init__(self, port, ids, baud=1_000_000):
+    def __init__(self, port, ids, baud=1_000_000, port_handler=None):
+        """`port_handler` lets tests hand in tools/feetech_sim.LoopbackPort instead of a
+        serial device; everything after this line, SDK included, runs unchanged."""
         self.ids = list(ids)
-        self.port = PortHandler(port)
+        self.port = port_handler if port_handler is not None else PortHandler(port)
         if not self.port.openPort():
             raise RuntimeError(f"could not open {port}")
         if not self.port.setBaudRate(baud):
@@ -127,6 +129,12 @@ class Bus:
         motors because of one bad cable.
         """
         with self.lock:
+            # The SDK never clears its per-motor buffers. When motor 4 is silent, readRx gives up
+            # at 4 and motors 5 and 6 keep the bytes of the PREVIOUS read, which isAvailable()
+            # happily reports as fresh. Clear first so stale data shows up as absent, not as a
+            # position that never changes. (Found by the loopback test on 2026-11-21.)
+            for i in self.polled:
+                self.reader.data_dict[i] = []
             res = self.reader.txRxPacket()
         out = {}
         g = self.reader.getData
