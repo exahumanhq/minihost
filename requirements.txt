@@ -1,0 +1,4 @@
+feetech-servo-sdk
+numpy
+mujoco      # only for --sim
+pygame      # operator side only
